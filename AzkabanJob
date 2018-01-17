@@ -1,0 +1,86 @@
+import java.io.{BufferedWriter, File, FileWriter, IOException}
+
+import scala.beans.BeanProperty
+
+
+@BeanProperty
+class AzkabanJob {
+  var jobName          = ""
+  var jobType: String  = ""
+  var instructions     = ""
+  var retry            = ""
+  var retryBackOff     = ""
+  var noficationsMail  = ""
+  var failureMails     = ""
+  var successMails     = ""
+  var dependency       = ""
+  var executeFrequency = ""
+  var finalpath        = ""
+
+  def makefile(path:String):BufferedWriter = {
+     val file = new File(path)
+    val fileDir=file.getParentFile
+    if(!fileDir.exists()){
+      fileDir.mkdirs()
+    }
+     this.finalpath = s"$path.job"
+     val writer = WritetoFile(finalpath,true)
+     val jobname = s"#$jobName"
+     val jobtype = s"type = $jobType"
+     writer.write(jobname)
+     writer.newLine()
+     writer.write(jobtype);
+     writer.newLine()
+     if(this.failureMails != "")
+       {
+         val failure_emails = s"failure.emails = ${this.failureMails}"
+         writer.write(failure_emails)
+         writer.newLine()
+       }
+     if (this.successMails !="")
+       {
+         val success_emails = s"success.emails = ${this.successMails}"
+         writer.write(success_emails)
+         writer.newLine()
+       }
+    if (this.noficationsMail !="")
+      {
+        val notify_emails = s"notify.emails = ${noficationsMail}"
+        writer.write(notify_emails)
+        writer.newLine()
+      }
+     if(this.retry!="") {
+       val retries = s"retries = ${retry}"
+       writer.write(retries);
+       writer.newLine()
+     }
+     if(this.retryBackOff !="")
+       {
+        val retry_back= s"retry.backoff = ${retryBackOff}"
+         writer.write(retry_back);
+         writer.newLine()
+       }
+
+
+    if(this.dependency.trim != "") {
+      val dependencies = s"dependencies = ${this.dependency}"
+      writer.write(dependencies)
+      writer.newLine()
+    }
+     writer.flush()
+     writer
+  }
+  @throws[IOException]
+  def WritetoFile(filepath: String, append: Boolean): BufferedWriter = {
+    val file   = new File(filepath)
+
+    if (!file.exists) {
+      file.createNewFile
+    }
+    val fileWriter = new FileWriter(file, append)
+    val bufferWriter = new BufferedWriter(fileWriter)
+    bufferWriter
+  }
+
+  def mkDirByRec(path:String) = {}
+}
