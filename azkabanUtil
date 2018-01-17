@@ -1,0 +1,189 @@
+import java.util.Properties
+
+import com.finup.nbsp.daas.mart.utils.ConfigUtils
+import org.slf4j.LoggerFactory
+
+import scala.sys.process._
+import scala.util.parsing.json.JSON
+
+
+/**
+ 
+  */
+class azkabanUtil(config: Properties) {
+  //todo 将封装的azkaban API 抽象出一个统一模板
+  //todo token 重置问题
+
+   val logger      = LoggerFactory.getLogger(classOf[azkabanUtil])
+
+   //用户名
+   val username    = config.getProperty("azkaban.username")
+   //密码
+   val password    = config.getProperty("azkaban.password")
+   //azkaban的url
+   val url         = config.getProperty("azkaban.url")
+   //任务重试次数
+   val retry       = config.getProperty("azkaban.retry")
+
+  /**
+    * @param retryCount     重试次数
+    * @return session.id    登录授权的token
+    * 获得登录azkaban的权限
+    */
+   def getToken(retryCount:Int = 1) : String ={
+     if(retryCount >= retry.toInt){logger.error("get token failure");""}else {
+       logger.info("get token")
+       //构建请求体
+//       val requestBodyMap = Map("action"->"login","username"->username,"password"->password)
+//       val request        =httpUtil.postRequest(httpHeader)(requestBodyMap)(url)
+//       val response = request.execute;
+       val response=s"""curl -k -X POST --data action=login&username=$username&password=$password $url"""!!
+       val json    = JSON.parseFull(response)
+       json match {
+         case Some(map: Map[String, Any]) => {
+           if (map.get("status").get.toString.trim == "success") {
+             logger.info("get token success")
+             map.get("session.id").get.toString
+           } else getToken(retryCount+1)
+         }
+         case _ => getToken(retryCount+1)
+       }
+     }
+   }
+  /**
+    * @param projectName    项目名称
+    * @param description    项目描述
+    * @param retryCount     重试次数
+    * 创建azkaban项目
+    */
+   def createProject(projectName:String,description:String)(retryCount:Int = 1)(implicit token:String):Unit = {
+     if (retryCount >= retry.toInt) {
+       logger.error("create project failure");
+       ""
+     } else {
+       logger.info("create project")
+       val response = s"""curl -k -X POST --data session.id=$token&name=$projectName&description=$description $url/manager?action=create""" !!;
+       val json = JSON.parseFull(response)
+       json match {
+         case Some(map: Map[String, Any]) => {
+           if (map.get("status").get.toString.trim == "success") {
+             logger.info("create project success")
+           } else createProject(projectName,description)(retryCount+1)
+         }
+         case _ => createProject(projectName,description)(retryCount+1)
+       }
+     }
+   }
+
+//  def mkfile(filename: String, )
+  /**
+    * @param dstpath       文件路径
+    * @return filename     生成的文件路径
+    * 上传zip包到指定的项目中
+    */
+  def zipDir(dstpath:String) :String= {
+    val dst = dstpath.substring(0,dstpath.lastIndexOf("/"))
+    val filename =s"generated_from_${dstpath.substring(dstpath.lastIndexOf("/")+1, dstpath.length)}"
+    //val cddir   = s"cd $dst"!
+    val command = s"zip -r $dst/$filename.zip $dst"!;
+    logger.info(s"compress file from path :$dst,filename :$filename")
+    s"$dst/$filename.zip"
+  }
+  /**
+    * @param projectName    项目名称
+    * @param filepath       文件路径
+    * @param retryCount     重试次数
+    * 上传zip包到指定的项目中
+    */
+   def uploadProjectZip(projectName:String,filepath:String)(retryCount:Int =1)(implicit token:String):Unit = {
+     if (retryCount >= retry.toInt) {
+       logger.error(s"upload zip to project:$projectName failure")
+     } else {
+       logger.info(s"upload zip to project:$projectName")
+       val resquest = s"""curl -k -i -H "Content-Type:multipart/mixed" -X POST --form session.id=$token --form ajax=upload --form file=@$filepath;type=application/zip --form project=$projectName $url/manager"""
+       println(resquest)
+
+       val response = resquest!
+
+       println(s"response = $response")
+
+       if(response == 0)
+         {
+           logger.info(s"upload zip to project:$projectName success")
+         }
+       else{
+         uploadProjectZip(projectName,filepath)(retryCount+1)
+       }
+     }
+   }
+
+  /**
+    * 删除azkaban上的job
+    * @param projectName 项目名称
+    * @param retryCount  重试次数
+    * @param token       sessionid
+    */
+  def delProject(projectName:String)(retryCount:Int =1)(implicit token:String): Unit = {
+
+    if (retryCount >= retry.toInt) {
+      logger.error(s"delete project:$projectName failure")
+      throw new Exception("delete project Error!,beyond retry times")
+    } else {
+      logger.info(s"delete project:$projectName")
+      val resquest = s"""curl -k --get --data session.id=$token&delete=true&project=$projectName $url/manager"""
+      println(resquest)
+
+      val response = resquest!
+
+//      println(s"response = $response")
+
+      if(response == 0)
+      {
+        logger.info(s"delete project:$projectName success")
+      }
+      else{
+        delProject(projectName)(retryCount+1)
+      }
+    }
+
+  }
+
+}
+
+object azkabanUtil {
+
+  def apply(config: Properties = null): azkabanUtil = {
+    if(config == null){
+//      val path = Thread.currentThread().getContextClassLoader.getResource("config/azkaban.properties").getPath
+      val conf = ConfigUtils.getConfig("/config/azkaban.properties")
+      new azkabanUtil(conf)
+    }else{
+      new azkabanUtil(config)
+    }
+  }
+
+  def main(args: Array[String]): Unit = {
+    val a = azkabanUtil()
+
+    val cmd = CommandJob()
+
+    cmd.jobName = "fftest"
+    cmd.instructions = "sh /Users/finup/finup-daas/project-online/daas-mart/cif2dw/bin/cif2dw_data_synchronization.sh azkaban execution_jobs daily default default"
+
+    cmd.makefile("/Users/finup/finup-daas/dataSet/fftest")
+
+    implicit val token = a.getToken()
+
+    a.createProject("fftest1", "test")()
+
+    val filename = a.zipDir("/Users/finup/finup-daas/dataSet/fftest")
+
+    a.uploadProjectZip("fftest1", filename)()
+
+//    a.delProject("test1")()
+
+    println(token)
+
+  }
+
+}
