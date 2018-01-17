@@ -1,0 +1,34 @@
+import scala.beans.BeanProperty
+
+/**
+  * 
+  */
+@BeanProperty
+class CommandJob extends AzkabanJob{
+
+  override def makefile(path:String) = {
+    val writer = super.makefile(path)
+
+    val instructionArray = this.instructions.split("\\n")
+    for(i<-0 to instructionArray.size-1){
+      val command = if(i ==0)"command"else s"command.$i"
+      writer.write(s"$command = ${instructionArray(i)}")
+      writer.newLine()
+    }
+    if(noficationsMail.trim!=""){
+      writer.write(noficationsMail)
+    }
+    writer.flush()
+    writer.close()
+    writer
+  }
+
+}
+
+object CommandJob{
+  def apply() = {
+    val c = new CommandJob()
+    c.jobType = "command"
+    c
+  }
+}
