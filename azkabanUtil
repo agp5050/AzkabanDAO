@@ -1,14 +1,17 @@
+package com.finup.nbsp.daas.mart.azkabanInteract
+
 import java.util.Properties
 
 import com.finup.nbsp.daas.mart.utils.ConfigUtils
+import org.bson.types.ObjectId
 import org.slf4j.LoggerFactory
 
+import scala.collection.immutable.List
+import scala.collection.mutable.ArrayBuffer
 import scala.sys.process._
 import scala.util.parsing.json.JSON
-
-
 /**
- 
+  * Created by john_liu on 2017/11/15.
   */
 class azkabanUtil(config: Properties) {
   //todo 将封装的azkaban API 抽象出一个统一模板
@@ -24,30 +27,44 @@ class azkabanUtil(config: Properties) {
    val url         = config.getProperty("azkaban.url")
    //任务重试次数
    val retry       = config.getProperty("azkaban.retry")
+   var tokenTime=0L //token产生时间
+   var tmpToken=""//token指针
 
   /**
     * @param retryCount     重试次数
     * @return session.id    登录授权的token
     * 获得登录azkaban的权限
+    * token默认24H失效，不能用val应该用var，每次请求的时候如果不过期则继续使用，过期则重新申请一个token。
     */
    def getToken(retryCount:Int = 1) : String ={
      if(retryCount >= retry.toInt){logger.error("get token failure");""}else {
-       logger.info("get token")
+       //logger.infor("get token")
        //构建请求体
 //       val requestBodyMap = Map("action"->"login","username"->username,"password"->password)
 //       val request        =httpUtil.postRequest(httpHeader)(requestBodyMap)(url)
 //       val response = request.execute;
-       val response=s"""curl -k -X POST --data action=login&username=$username&password=$password $url"""!!
-       val json    = JSON.parseFull(response)
-       json match {
-         case Some(map: Map[String, Any]) => {
-           if (map.get("status").get.toString.trim == "success") {
-             logger.info("get token success")
-             map.get("session.id").get.toString
-           } else getToken(retryCount+1)
+       val currenTime=System.currentTimeMillis()
+       val spendTime=currenTime-tokenTime
+
+
+       if(tokenTime==0L||spendTime>=azkabanUtil.oneDayMilliSecond){
+         val response=s"""curl -k -X POST --data action=login&username=$username&password=$password $url"""!!
+         val json    = JSON.parseFull(response)
+         json match {
+           case Some(map: Map[String, Any]) => {
+             if (map.get("status").get.toString.trim == "success") {
+               //logger.infor("get token success")
+               tokenTime=System.currentTimeMillis()
+               tmpToken=map.get("session.id").get.toString
+               tmpToken
+             } else getToken(retryCount+1)
+           }
+           case _ => getToken(retryCount+1)
          }
-         case _ => getToken(retryCount+1)
+       }else{
+         tmpToken
        }
+
      }
    }
   /**
@@ -56,18 +73,23 @@ class azkabanUtil(config: Properties) {
     * @param retryCount     重试次数
     * 创建azkaban项目
     */
-   def createProject(projectName:String,description:String)(retryCount:Int = 1)(implicit token:String):Unit = {
+   def createProject(projectName:String,description:String)(retryCount:Int = 1)(implicit token:String):String = {
      if (retryCount >= retry.toInt) {
        logger.error("create project failure");
-       ""
+       "failure"
      } else {
-       logger.info("create project")
-       val response = s"""curl -k -X POST --data session.id=$token&name=$projectName&description=$description $url/manager?action=create""" !!;
+       logger.info(s"create project:$token,,$projectName,,,$url")
+       val req = s"""curl -k -X POST --data session.id=$token&name=$projectName&description=$description $url/manager?action=create""";
+       logger.info(req+"::::req create project.")
+       val response=req!!;
+       logger.info(response)
        val json = JSON.parseFull(response)
        json match {
          case Some(map: Map[String, Any]) => {
            if (map.get("status").get.toString.trim == "success") {
              logger.info("create project success")
+             "createSuccess"
+
            } else createProject(projectName,description)(retryCount+1)
          }
          case _ => createProject(projectName,description)(retryCount+1)
@@ -83,10 +105,11 @@ class azkabanUtil(config: Properties) {
     */
   def zipDir(dstpath:String) :String= {
     val dst = dstpath.substring(0,dstpath.lastIndexOf("/"))
+
     val filename =s"generated_from_${dstpath.substring(dstpath.lastIndexOf("/")+1, dstpath.length)}"
     //val cddir   = s"cd $dst"!
     val command = s"zip -r $dst/$filename.zip $dst"!;
-    logger.info(s"compress file from path :$dst,filename :$filename")
+    //logger.infor(s"compress file from path :$dst,filename :$filename")
     s"$dst/$filename.zip"
   }
   /**
@@ -99,7 +122,7 @@ class azkabanUtil(config: Properties) {
      if (retryCount >= retry.toInt) {
        logger.error(s"upload zip to project:$projectName failure")
      } else {
-       logger.info(s"upload zip to project:$projectName")
+       //logger.infor(s"upload zip to project:$projectName")
        val resquest = s"""curl -k -i -H "Content-Type:multipart/mixed" -X POST --form session.id=$token --form ajax=upload --form file=@$filepath;type=application/zip --form project=$projectName $url/manager"""
        println(resquest)
 
@@ -109,13 +132,189 @@ class azkabanUtil(config: Properties) {
 
        if(response == 0)
          {
-           logger.info(s"upload zip to project:$projectName success")
+           //logger.infor(s"upload zip to project:$projectName success")
          }
        else{
          uploadProjectZip(projectName,filepath)(retryCount+1)
        }
      }
    }
+
+  def schedule(projectName:String ,flow:String,exeHour:Int,exeMin:Int)(implicit token:String): Unit ={
+
+    val resquest = Seq("curl","-k","-d","ajax=scheduleCronFlow","-d",s"projectName=$projectName","-d",s"flow=$flow","--data-urlencode",s"cronExpression=0 $exeMin $exeHour ? * *","-b",s"azkaban.browser.session.id=$token",s"$url/schedule")
+
+//    val resquest = s"""curl -k -d ajax=scheduleCronFlow -d projectName=$projectName -d flow=$flow --data-urlencode cronExpression="0 5* * ? * *" -b azkaban.browser.session.id=$token $url/schedule"""
+
+    val response = resquest !
+
+    if(response == 0){
+      //logger.infor("schedule success")
+    }else{
+      //logger.infor("schedule fail")
+    }
+
+      println(s"response = $response")
+    println(s"request = $resquest")
+  }
+
+  /**
+    *
+    * @param projectId
+    * @param flowId
+    * @return
+    * curl -k --get --data "session.id=XXXXXXXXXXXXXX&ajax=fetchSchedule&projectId=1&flowId=test" http://localhost:8081/schedule
+    *An example success response:
+{
+  "schedule" : {
+    "cronExpression" : "0 * 9 ? * *",
+    "nextExecTime" : "2017-04-01 09:00:00",
+    "period" : "null",
+    "submitUser" : "azkaban",
+    "executionOptions" : {
+      "notifyOnFirstFailure" : false,
+      "notifyOnLastFailure" : false,
+      "failureEmails" : [ ],
+      "successEmails" : [ ],
+      "pipelineLevel" : null,
+      "queueLevel" : 0,
+      "concurrentOption" : "skip",
+      "mailCreator" : "default",
+      "memoryCheck" : true,
+      "flowParameters" : {
+      },
+      "failureAction" : "FINISH_CURRENTLY_RUNNING",
+      "failureEmailsOverridden" : false,
+      "successEmailsOverridden" : false,
+      "pipelineExecutionId" : null,
+      "disabledJobs" : [ ]
+    },
+    "scheduleId" : "3",
+    "firstSchedTime" : "2017-03-31 11:45:21"
+  }
+}
+    */
+  def getScheduleId(projectId:Int,flowId:Some[String])(implicit token:String):String={
+      val creq = s"curl $url/schedule -k --get --data session.id=$token&ajax=fetchSchedule&projectId=$projectId&flowId=${flowId.get} "
+      val response= creq!!
+      val jsonV = JSON.parseFull(response)
+      jsonV match {
+        case map:Some[Map[_,_]]=> map.get.asInstanceOf[Map[String,Any]].get("schedule").get.asInstanceOf[Map[String,String]].get("scheduleId").get
+        case _ => null
+      }
+
+  }
+
+
+  /**
+    *
+    * @param projectName
+    * 通过projectId和flows获取schduleIDs
+    * curl -k --get --data "session.id=XXXXXXXXXXXXXX&ajax=fetchSchedule&projectId=1&flowId=test" http://localhost:8081/schedule
+    */
+  def getScheduleIdsRelatedToProject(projectName:String)(implicit token:String): ArrayBuffer[String] = {
+    val projectIdAndFlows = fetchFlowsOfProject(projectName)
+    if (projectIdAndFlows != null) {
+      val projectId = projectIdAndFlows.keys.head
+      val projectIntId=projectId.toDouble.toInt
+      val flows = projectIdAndFlows.values.toArray.head
+      val scheduledIds = new scala.collection.mutable.ArrayBuffer[String]()
+      for (item <- flows.asInstanceOf[List[Some[String]]]) {
+        val scheduleId = getScheduleId(projectIntId, item)
+        scheduledIds.append(scheduleId)
+      }
+      scheduledIds
+    }else null
+
+  }
+
+
+  /**
+    * Unschedule a Flow取消单个schdule
+    * @param scheduleId
+    * @param token
+    *
+    * curl -k https://HOST:PORT/schedule -d "action=removeSched&scheduleId=SCHEDULE_ID" -b azkaban.browser.session.id=SESSION_ID
+    *{
+  "message" : "flow FLOW_NAME removed from Schedules.",
+  "status" : "success"
+}
+    {
+  "message" : "Schedule with ID SCHEDULE_ID does not exist",
+  "status" : "error"
+}
+    */
+  def unscheduleFlow(scheduleId:String)(implicit token:String): String ={
+    var creq = s"curl -k $url/schedule -d action=removeSched&scheduleId=$scheduleId -b azkaban.browser.session.id=$token"
+    val response= creq !!
+    val jsonV=JSON.parseFull(response)
+    //logger.infor(creq)
+    logger.info(s"$response ::::Response unScheduleFlow")
+
+    jsonV match{
+      case map:Some[Map[_,_]]=> map.get.asInstanceOf[Map[String,String]].get("status").get
+      case _ => scheduleId
+    }
+
+  }
+  /**
+    *
+    * @param projectName
+    * @param token
+    * 删除之前需要首先取消Schdule
+    * 一个project可以有多个排程比如8点、 晚上22点，需要将这些排程的ID全部取消然后才能删除
+    * 这个project
+    */
+  def unscheduleFlows(projectName:String)(implicit token:String): String ={
+    val failures=new ArrayBuffer[String]()
+    val scheduleIdArray=getScheduleIdsRelatedToProject(projectName).toArray
+    for(scheduleId<-scheduleIdArray){
+      val unscheduleRst=unscheduleFlow(scheduleId)
+      if(unscheduleRst!="success"){
+        failures.append(unscheduleRst)
+      }
+    }
+    val finalStatus=if(failures.length>0) s"unschedule $projectName related flows failed ,failed scheduleId are:${failures.toString}"
+    else "success"
+    finalStatus
+
+
+
+  }
+
+  /**
+    *Fetch Flows of a Project
+    * @param projectName
+    * @param token
+    * @return projectId->flows列表
+    *  "projectId" : 192
+    *  "flows" : [ {
+    *  "flowId" : "test"
+    *     }, {
+    *   "flowId" : "test2"
+    *     } ]
+    *     获取某个project的排程列表（flowID列表），和projectId
+    *     通过flowID和projectId才能获取schedule ID。获取schedule ID后才能取消这个schedule.
+    */
+  def fetchFlowsOfProject(projectName:String)(implicit token:String):Map[String,Any] ={
+      val creq=s"curl $url/manager -k --get --data session.id=$token&ajax=fetchprojectflows&project=$projectName"
+      println("fetchFlowsOfProject_creq:::"+creq)
+      val response= creq !!
+      val jsonV = JSON.parseFull(response)
+      println(s"fetchFlowsOfProject_jsonV:::$jsonV")
+      jsonV match {
+        case maps:Some[Map[String,Any]] => {
+          val flows=maps.get("flows").asInstanceOf[List[Map[String,String]]].map(item=>item.get("flowId"))
+          val projectId=maps.get("projectId")
+          val Rst=Map(projectId.toString->flows)
+          return Rst
+        }
+        case _ => null
+      }
+  }
+
+
+
 
   /**
     * 删除azkaban上的job
@@ -129,17 +328,24 @@ class azkabanUtil(config: Properties) {
       logger.error(s"delete project:$projectName failure")
       throw new Exception("delete project Error!,beyond retry times")
     } else {
-      logger.info(s"delete project:$projectName")
-      val resquest = s"""curl -k --get --data session.id=$token&delete=true&project=$projectName $url/manager"""
+      //logger.infor(s"unschedule Flow: $projectName")
+      val unschedRst=unscheduleFlows(projectName)
+      if(unschedRst!="success"){
+        logger.error(unschedRst)
+        delProject(projectName)(retryCount+1)
+      }
+      //logger.infor(s"unschedule project $projectName related flows $unschedRst")
+      //logger.infor(s"delete project:$projectName")
+      val resquest = s"""curl $url/manager -k --get --data session.id=$token&delete=true&project=$projectName"""
       println(resquest)
 
       val response = resquest!
 
-//      println(s"response = $response")
+      println(s"response = $response")
 
       if(response == 0)
       {
-        logger.info(s"delete project:$projectName success")
+        //logger.infor(s"delete project:$projectName success")
       }
       else{
         delProject(projectName)(retryCount+1)
@@ -151,7 +357,7 @@ class azkabanUtil(config: Properties) {
 }
 
 object azkabanUtil {
-
+  val oneDayMilliSecond=24*3600
   def apply(config: Properties = null): azkabanUtil = {
     if(config == null){
 //      val path = Thread.currentThread().getContextClassLoader.getResource("config/azkaban.properties").getPath
@@ -164,26 +370,39 @@ object azkabanUtil {
 
   def main(args: Array[String]): Unit = {
     val a = azkabanUtil()
-
+    implicit var token = a.getToken()
     val cmd = CommandJob()
 
-    cmd.jobName = "fftest"
-    cmd.instructions = "sh /Users/finup/finup-daas/project-online/daas-mart/cif2dw/bin/cif2dw_data_synchronization.sh azkaban execution_jobs daily default default"
+//    a.delProject("agpLocal8_1516862367308")(1)
+//    val rst=a.fetchFlowsOfProject("agpMlocal6_1516959444001")
+//    println(rst)
+    val id=new ObjectId("9089beb2-576d-47e3-b040-86dbdc7f523e")
+    println(id.getTimestamp)
+    System.exit(0)
 
-    cmd.makefile("/Users/finup/finup-daas/dataSet/fftest")
+    cmd.jobName = "test1"
+    cmd.instructions = "echo \"this is test job\""
 
-    implicit val token = a.getToken()
+    cmd.makefile("/Users/finup/test/azkabantest")
 
-    a.createProject("fftest1", "test")()
+//    implicit val token = a.getToken()
 
-    val filename = a.zipDir("/Users/finup/finup-daas/dataSet/fftest")
+    a.createProject("test1", "test123")()
 
-    a.uploadProjectZip("fftest1", filename)()
+    val filename = a.zipDir("/Users/finup/test/azkabantest")
 
+    a.uploadProjectZip("test1", filename)()
+
+
+    a.schedule("test1","azkabantest",8,3)
 //    a.delProject("test1")()
 
     println(token)
 
   }
 
+//  def main(args: Array[String]): Unit = {
+//    val a = azkabanUtil()
+//    a.schedule("execution_jobsdefault_1515409193304","daasmarket")
+//  }
 }
