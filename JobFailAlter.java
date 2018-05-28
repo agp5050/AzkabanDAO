@@ -26,6 +26,8 @@ import java.util.concurrent.BlockingQueue;
  * @Author Mr.An
  * @Date 18/5/25 上午10:07
  * 常驻警报线程
+ * 一个project包涵多个flow，一个flow包涵多个job，要做到job级别的alter,这个只是flow级别的等待更新
+ * 以最大的提交日期为分界线区分新的job监测界线
  */
 public class JobFailAlter implements Runnable {
 
